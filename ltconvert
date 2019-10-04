@@ -1,0 +1,122 @@
+#!/bin/bash
+# Copyright (C) Robert Bruntz (2019)
+# This is a "lightweight tconvert" (thus, "ltconvert") that is intended to take in a GPS time, then convert it to human-readable format.  If 2 times are given, both are converted and the time between them is calculated.
+# Started by Robert Bruntz on 2019.07.28.
+# Usage:
+# Put this script somewhere that your PATH variable will find it and change the permissions so that it is executable.
+# Run like this (entering only the text in single quote):
+#   ' ltconvert '   to get usage information and the current GPS time and UTC time
+#   ' ltconvert now '   to get the current GPS time and UTC time
+#   ' ltconvert (GSP time) '   to get the UTC time for the given GPS time
+#   ' ltconvert (GPS time 1) (GPS time 2) '   to get the UTC time for both GPS times and the difference between the two times
+# Notes:
+# * 'now' (no quotes) is a valid time for any input time.
+# * You can enter the first 5 digits of a GPS time to get the last 5 digits filled with 0's (e.g., '12345' is turned into '1234500000')
+# * If you want to use a 5-digit GPS time, add one or more 0's in the front, to avoid the 5-digit-conversion thing (e.g., '012345' will get the UTC time for GPS time = 12345)
+# * Output times are in UTC (Coordinated Universal Time).  If needed, Google can help you easily find the conversion between UTC and your time zone.
+# * As of July 2019, the last leap-second was on 2016.12.31, 23:59:60 [sic] UTC (GPS time: 1151366416 (?)).  Any times at or before that point in time must account for leap seconds.  [ https://en.wikipedia.org/wiki/Leap_second ]
+# * There have been 18 leap-seconds since GPS epoch (midnight between Jan. 5 and 6, 1980), so that is the max that a GPS-time-to-UTC-time conversion could be off by, up to 23:59:59 UTC on 2019.12.31 (GPS: 1261872017).
+# * LIGO data goes back to ~1038100000 (Nov 28 2012 01:06:24 UTC).  There have been 2 leap seconds since 2012.07.01, so that is the max that a LIGO-related GPS-time-to-UTC-time conversion could be off by.
+# * From 2017.01.01, 00:00:00 UTC (GPS 1167264018) onward, GPS time can be converted to Unix time as GPS = Unix - 315964782 (and thus Unix = GPS + 315964782).  Before that date and time, leap seconds must be taken into account.
+# * GPS <-> UTC here: https://www.gw-openscience.org/gps/ ; GPS <-> UTC (with Unix thrown in for free) here: https://www.andrews.edu/~tzs/timeconv/timeconvert.php (and more info on leap seconds)
+# * On leap seconds: GPS labels each second uniquely, including leap seconds; UTC does, as well, but uses an atypical label for leap seconds; Unix re-uses a timestamp for leap seconds:
+#     (e.g., for a leap second (occurring at midnight), GPS would progress g, g+1, g+2; UTC would progress 23:59:59, 23:59:60, 00:00:00; Unix time would progress u, u, u+1; more info here: https://en.wikipedia.org/wiki/Unix_time#Leap_seconds)
+# To do:
+#   * add a test on input times, to make sure that they're both numbers (if not 'now')
+#   * decide if we should allow negative GPS times
+#   * account for more leap seconds (?) (use https://en.wikipedia.org/wiki/Leap_second plus https://www.andrews.edu/~tzs/timeconv/timeconvert.php )
+#   * option to turn off warning messages?
+#   * option to return output times in another time zone?
+
+gps_time2=-1
+gps_now=$((`date +%s` - 315964782))
+leap_unknown=1261872017
+leap_27=1167264017
+leap_26=1119744016
+leap_25=1025136015
+leap_safe=914803215
+gps_offset=0
+
+if [ "$#" -eq 0 ]; then echo "### INFO ### Usage: '  (script name)  (GPS time)  [GPS time]  '.  Outputs human-readable versions of the GPS time(s); if 2 times given, also gives the duration of time between them.  'now' is a valid time (no quotes)."; gps_time1="now"; fi
+if [ "$#" -ge 1 ]; then gps_time1=$1; fi
+if [ "$gps_time1" == "now" ] || [ "$gps_time1" == "Now" ] || [ "$gps_time1" == "NOW" ]; then gps_time1=$gps_now; echo "### NOTICE ### GPS time 1 converted from 'now' to $gps_now"; fi
+if [ `echo -n $gps_time1 | wc -c` -eq 5 ]; then gps_time1_old=$gps_time1; gps_time1=${gps_time1}00000; 
+  echo "### NOTICE ### 5-digit GPS times have 5  0's appended (so $gps_time1_old was changed to $gps_time1); if you don't want this, add 1 or more 0's to the start of your GPS time (e.g., '0${gps_time1_old})"
+fi   # this is so that a user can enter just the first 5 digits of a GPS time
+if [ "$#" -ge 2 ]; then gps_time2=$2; fi
+if [ "$gps_time2" == "now" ] || [ "$gps_time2" == "Now" ] || [ "$gps_time2" == "NOW" ]; then gps_time2=$gps_now; echo "### NOTICE ### GPS time 2 converted from 'now' to $gps_now"; fi
+if [ `echo -n $gps_time2 | wc -c` -eq 5 ]; then gps_time2_old=$gps_time2; gps_time2=${gps_time2}00000; 
+  echo "### NOTICE ### 5-digit GPS times have 5  0's appended (so $gps_time2_old was changed to $gps_time2); if you don't want this, add 1 or more 0's to the start of your GPS time (e.g., '0${gps_time2_old})"
+fi   # this is so that a user can enter just the first 5 digits of a GPS time
+if [ "$#" -ge 3 ]; then echo "### WARNING ### Only the first 2 command-line args are used ('$gps_time1' and '$gps_time2'); remaining args are ignored.  Run without any args for usege info."; fi
+
+# convert GPS time(s) to UTC time(s)
+for gps_time in $gps_time1 $gps_time2
+do
+  if [ $gps_time -eq -1 ]; then exit; fi
+  if [ $gps_time -eq $leap_27 ]; then echo "### WARNING ### GPS time $leap_27 is a leap second; thus, it maps to 23:59:60, even though the output says 23:59:59.  (This is an issue with how Unix handles leap seconds.)"; fi
+  if [ $gps_time -lt $leap_27 ]; then unix_offset=1; fi
+  if [ $gps_time -eq $leap_26 ]; then echo "### WARNING ### GPS time $leap_26 is a leap second; thus, it maps to 23:59:60, even though the output says 23:59:59.  (This is an issue with how Unix handles leap seconds.)"; fi
+  if [ $gps_time -lt $leap_26 ]; then unix_offset=2; fi
+  if [ $gps_time -eq $leap_25 ]; then echo "### WARNING ### GPS time $leap_25 is a leap second; thus, it maps to 23:59:60, even though the output says 23:59:59.  (This is an issue with how Unix handles leap seconds.)"; fi
+  if [ $gps_time -lt $leap_25 ]; then unix_offset=3; fi
+  if [ $gps_time -gt $leap_unknown ]    # the second before the next possible leap second (as of July 2019)
+    then echo "### WARNING ### UTC time after GPS time $leap_unknown should account for leap seconds, but this program doesn't do that yet.  The output time could be off, if there have been any leap seconds since 1 Dec. 2019."; fi
+  if [ $gps_time -lt $leap_safe ]    # the second after the last leap second this program doesn't account for
+    then echo "### WARNING ### UTC time before GPS time $leap_safe should account for leap seconds, but this program doesn't do that yet.  The output time could be off by up to 15 seconds."; fi
+
+  unix_time=$((gps_time + 315964782 + unix_offset))
+  echo "GPS time $gps_time = $(date -u -d @$unix_time)"
+done
+
+# if 2 GPS times given, find the difference in time between them; this section is not affected by leap seconds
+if [ $gps_time2 -ne -1 ]
+then
+  day_count=0
+  hour_count=0
+  minute_count=0
+  sec_count=0
+  #echo "### TESTING ### day, hour, min, sec counts = $day_count, $hour_count, $minute_count, $sec_count"
+  if [ $gps_time1 -ge $gps_time2 ]; then time_diff=$((gps_time1 - gps_time2)); else time_diff=$((gps_time2 - gps_time1)); fi
+  time_diff_tmp=$time_diff
+  while [ $time_diff_tmp -gt $((24*60*60)) ]; do   # count up any days in the time difference
+    day_count=$((day_count + 1))
+    time_diff_tmp=$((time_diff_tmp - 24*60*60))
+  done
+  while [ $time_diff_tmp -gt $((60*60)) ]; do   # count up any hours in the time difference
+    hour_count=$((hour_count + 1))
+    time_diff_tmp=$((time_diff_tmp - 60*60))
+  done
+  while [ $time_diff_tmp -gt $((60)) ]; do   # count up any minutes in the time difference
+    minute_count=$((minute_count + 1))
+    time_diff_tmp=$((time_diff_tmp - 60))
+  done
+  sec_count=$time_diff_tmp
+  #echo "### TESTING ### day, hour, min, sec counts = $day_count, $hour_count, $minute_count, $sec_count"
+  echo "Time difference between $gps_time1 and $gps_time2 = $time_diff seconds  =  ($day_count days  +  $hour_count hours  +  $minute_count minutes  +  $sec_count seconds)."
+fi
+
+exit
+
+License:
+MIT License
+
+Copyright (c) 2019 Robert Bruntz
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
